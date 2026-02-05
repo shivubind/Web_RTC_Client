@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Web RTC Client Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# This file configures the client application
+# Run on the client machine with: python livekit_client.py --config config-client.yml
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# LiveKit Server Connection
+# ─────────────────────────────────────────────────────────────────────────────────
+livekit:
+  # LiveKit server URL
+  # For local: ws://localhost:7880
+  # For remote: wss://your-server.com:7880 or wss://your-project.livekit.cloud
+  url: "ws://localhost:7880"
+  
+  # API credentials (must match server configuration)
+  api_key: "devkey"
+  api_secret: "secret"
+  
+  # Room name to join (must match server)
+  room: "Web RTC-room"
+  
+  # Client identity (unique per client)
+  identity: "user"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Audio Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+audio:
+  # Sample rate for audio
+  sample_rate: 48000
+  channels: 1
+  
+  # Buffer sizes
+  buffer_size: 960      # 20ms at 48kHz
+  playback_buffer: 4800 # 100ms buffer
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Video Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+video:
+  # Enable video by default
+  enabled: true
+  
+  # Camera device index (0 = default camera)
+  camera_index: 0
+  
+  # Video resolution
+  width: 640
+  height: 480
+  
+  # Frame rate (lower = less bandwidth)
+  fps: 15
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Logging Configuration
+# ─────────────────────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+
