@@ -11,17 +11,21 @@ livekit:
   # LiveKit server URL
   # For local: ws://localhost:7880
   # For remote: wss://your-server.com:7880 or wss://your-project.livekit.cloud
-  url: "ws://localhost:7880"
+  url: "ws://192.168.0.125:7880"
   
-  # API credentials (must match server configuration)
   api_key: "devkey"
   api_secret: "secret"
   
-  # Room name to join (must match server)
-  room: "Web RTC-room"
+  # Room name to join
+  room: "WebRTC-Room"
   
-  # Client identity (unique per client)
   identity: "user"
+
+  # Fix ICE/NAT/firewall issues (wait_pc_connection timed out, responsesReceived: 0)
+  # Set to true when direct UDP fails - uses TURN relay (requires TURN on server)
+  # Or use: python livekit_client.py --force-relay
+  # force_relay: true
+  # connect_timeout: 30
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Audio Configuration

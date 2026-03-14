@@ -13,6 +13,8 @@ Usage:
 """
 import asyncio
 import argparse
+import calendar
+import datetime
 import os
 import sys
 import threading
@@ -20,6 +22,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
+import jwt
 import numpy as np
 import pyaudio
 import yaml
@@ -129,6 +132,17 @@ class Config:
     @property
     def log_format(self):
         return self.get("logging", "format", default="%(asctime)s - %(levelname)s - %(message)s")
+
+    # Connection (ICE / NAT / firewall)
+    @property
+    def force_relay(self):
+        """Force TURN relay - use when direct ICE fails (NAT/firewall)."""
+        return self.get("livekit", "force_relay", default=False)
+
+    @property
+    def connect_timeout(self):
+        """Connection timeout in seconds (default 30 for slow/TURN)."""
+        return self.get("livekit", "connect_timeout", default=30)
 
 
 # Global config instance
@@ -338,12 +352,22 @@ class CameraSource:
 class LiveKitClient:
     """LiveKit room client with microphone, speaker, and camera"""
     
-    def __init__(self, url: str, token: str, room_name: str, enable_video: bool = True):
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        room_name: str,
+        enable_video: bool = True,
+        force_relay: bool = False,
+        connect_timeout: float | None = 30,
+    ):
         self.url = url
         self.token = token
         self.room_name = room_name
         self.enable_video = enable_video
-        
+        self.force_relay = force_relay
+        self.connect_timeout = connect_timeout
+
         self.room = rtc.Room()
         self.mic = MicrophoneSource()
         self.speaker = AudioPlayback()
@@ -388,9 +412,20 @@ class LiveKitClient:
         @self.room.on("connection_state_changed")
         def on_connection_state(state: rtc.ConnectionState):
             print(f"📡 Connection state: {state}")
-        
+
+        # Build RoomOptions for ICE/NAT handling
+        rtc_config = rtc.RtcConfiguration(
+            ice_transport_type=rtc.IceTransportType.TRANSPORT_RELAY
+            if self.force_relay
+            else rtc.IceTransportType.TRANSPORT_ALL,
+        )
+        options = rtc.RoomOptions(
+            rtc_config=rtc_config,
+            connect_timeout=self.connect_timeout,
+        )
+
         # Connect to room
-        await self.room.connect(self.url, self.token)
+        await self.room.connect(self.url, self.token, options)
         print(f"✓ Connected to room: {self.room.name}")
         
         # Print existing participants
@@ -562,19 +597,29 @@ class LiveKitClient:
 # Token Generation
 # ============================================================
 
-def create_token(room_name: str, identity: str) -> str:
-    """Create access token for room"""
-    token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-    token.with_identity(identity)
-    token.with_name(identity)
-    token.with_grants(api.VideoGrants(
-        room_join=True,
-        room=room_name,
-        can_publish=True,
-        can_subscribe=True,
-        can_publish_sources=["camera", "microphone"],
-    ))
-    return token.to_jwt()
+def create_token(room_name: str, identity: str, nbf_leeway_minutes: int = 5) -> str:
+    """Create access token for room.
+    nbf_leeway_minutes: set nbf this many minutes in the past to work around
+    server/client clock skew (fixes 'token not valid yet (nbf)' errors).
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    nbf = calendar.timegm((now_utc - datetime.timedelta(minutes=nbf_leeway_minutes)).utctimetuple())
+    exp = calendar.timegm((now_utc + datetime.timedelta(hours=6)).utctimetuple())
+    jwt_claims = {
+        "sub": identity,
+        "iss": LIVEKIT_API_KEY,
+        "nbf": nbf,
+        "exp": exp,
+        "video": {
+            "roomJoin": True,
+            "room": room_name,
+            "canPublish": True,
+            "canSubscribe": True,
+            "canPublishSources": ["camera", "microphone"],
+        },
+        "name": identity,
+    }
+    return jwt.encode(jwt_claims, LIVEKIT_API_SECRET, algorithm="HS256")
 
 
 # ============================================================
@@ -589,6 +634,11 @@ async def main():
     parser.add_argument("--identity", default=None, help="Your identity (overrides config)")
     parser.add_argument("--no-video", action="store_true", help="Disable camera/video")
     parser.add_argument("--camera", type=int, default=None, help="Camera device index (overrides config)")
+    parser.add_argument(
+        "--force-relay",
+        action="store_true",
+        help="Force TURN relay (fixes ICE/NAT/firewall issues when direct connection fails)",
+    )
     args = parser.parse_args()
     
     # Reload config if custom path specified
@@ -605,7 +655,9 @@ async def main():
     identity = args.identity or config.identity
     enable_video = not args.no_video and config.video_enabled
     camera_index = args.camera if args.camera is not None else config.camera_index
-    
+    force_relay = args.force_relay or config.force_relay
+    connect_timeout = config.connect_timeout
+
     print("═" * 50)
     print("  Web RTC - LiveKit Audio/Video Client")
     print("═" * 50)
@@ -613,13 +665,22 @@ async def main():
     print(f"  Server: {url}")
     print(f"  Room: {room_name}")
     print(f"  Video: {'Enabled' if enable_video else 'Disabled'}")
+    if force_relay:
+        print(f"  TURN relay: Forced (ICE fallback)")
     print("═" * 50)
-    
+
     # Generate token
     token = create_token(room_name, identity)
     
     # Create and connect client
-    client = LiveKitClient(url, token, room_name, enable_video=enable_video)
+    client = LiveKitClient(
+        url,
+        token,
+        room_name,
+        enable_video=enable_video,
+        force_relay=force_relay,
+        connect_timeout=connect_timeout,
+    )
     
     # Set camera index if video enabled
     if enable_video and client.camera:

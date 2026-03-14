@@ -73,7 +73,7 @@ To connect to a remote server, set in `config-client.yml`:
 
 ```yaml
 livekit:
-  url: "wss://your-server.com:7880"  # Remote server
+  url: "wss://192.168.0.125:7880"  # Remote server
   api_key: "your-api-key"
   api_secret: "your-api-secret"
   room: "Web RTC-room"
