@@ -41,7 +41,7 @@ python livekit_client.py
 # Or with custom config
 python livekit_client.py --config config-client.yml
 
-# Disable video
+# Disablepython livekit_client.py --config config-client.yml video
 python livekit_client.py --no-video
 ```
 

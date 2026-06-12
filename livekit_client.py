@@ -26,8 +26,7 @@ import jwt
 import numpy as np
 import pyaudio
 import yaml
-from livekit import rtc, api
-
+from livekit import rtc
 # Load environment variables (try .env.client first, then .env)
 load_dotenv(".env.client")
 load_dotenv()

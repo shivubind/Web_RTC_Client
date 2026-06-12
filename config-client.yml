@@ -11,7 +11,7 @@ livekit:
   # LiveKit server URL
   # For local: ws://localhost:7880
   # For remote: wss://your-server.com:7880 or wss://your-project.livekit.cloud
-  url: "ws://192.168.0.125:7880"
+  url: "ws://192.168.0.131:7880"
   
   api_key: "devkey"
   api_secret: "secret"
