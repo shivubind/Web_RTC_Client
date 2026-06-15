@@ -39,6 +39,16 @@ audio:
   buffer_size: 960      # 20ms at 48kHz
   playback_buffer: 4800 # 100ms buffer
 
+  # Acoustic Echo Cancellation — cancels the agent's voice (played on this machine's
+  # speaker) out of this machine's mic, so it doesn't false-trigger barge-in. Done
+  # here (client) because speaker+mic share a small, stable delay (the right place for AEC).
+  aec:
+    enabled: true
+    # Delay (ms) between a played frame and its echo arriving at the mic. Roughly the
+    # playback buffer (100ms @ 4800) + acoustic + capture. Raise if echo still leaks,
+    # lower if it over-cancels. Lowering playback_buffer (e.g. 1920) tightens this.
+    stream_delay_ms: 150
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Video Configuration
 # ─────────────────────────────────────────────────────────────────────────────────
