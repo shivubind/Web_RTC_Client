@@ -101,6 +101,19 @@ class Config:
     @property
     def playback_buffer(self):
         return self.get("audio", "playback_buffer", default=4800)
+
+    # Acoustic Echo Cancellation (so the agent's voice on the speaker doesn't leak
+    # into the mic and false-trigger barge-in). Done client-side where speaker+mic
+    # share a small, stable delay — the right place for WebRTC AEC.
+    @property
+    def aec_enabled(self):
+        return self.get("audio", "aec", "enabled", default=True)
+
+    @property
+    def aec_stream_delay_ms(self):
+        # Delay between rendering a played frame and its echo appearing in the mic.
+        # ~= playback buffer (100ms @ 4800) + acoustic + capture buffer. Tune live.
+        return self.get("audio", "aec", "stream_delay_ms", default=150)
     
     # Video
     @property
@@ -345,6 +358,37 @@ class CameraSource:
 
 
 # ============================================================
+# 10ms framer for the echo canceller
+# ============================================================
+
+class TenMsChunker:
+    """Accumulates int16 mono samples and yields rtc.AudioFrames of EXACTLY 10ms
+    (sample_rate/100 samples). The WebRTC AudioProcessingModule requires exactly-10ms
+    frames — any other size triggers an uncatchable Rust panic that kills the process,
+    so process_stream/process_reverse_stream must ONLY ever see frames from here."""
+
+    def __init__(self, sample_rate: int, channels: int = 1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.frame_samples = sample_rate // 100          # 480 @ 48kHz
+        self._buf = np.empty(0, dtype=np.int16)
+
+    def push(self, samples: np.ndarray):
+        """Append int16 samples; return a list of exact-10ms AudioFrames (remainder kept)."""
+        if len(samples):
+            self._buf = np.concatenate((self._buf, samples))
+        frames = []
+        n = self.frame_samples
+        while len(self._buf) >= n:
+            chunk = self._buf[:n]
+            self._buf = self._buf[n:]
+            frame = rtc.AudioFrame.create(self.sample_rate, self.channels, n)
+            np.copyto(np.frombuffer(frame.data, dtype=np.int16), chunk)
+            frames.append(frame)
+        return frames
+
+
+# ============================================================
 # LiveKit Client with Video
 # ============================================================
 
@@ -376,7 +420,29 @@ class LiveKitClient:
         self.video_source = None
         self.local_audio_track = None
         self.local_video_track = None
-        
+
+        # Acoustic echo cancellation: one shared APM fed both the played audio
+        # (far-end reference, process_reverse_stream) and the captured mic
+        # (near-end, process_stream) so the agent's voice is removed from the mic.
+        self.apm = None
+        self._cap_chunker = None   # mic → 10ms frames for process_stream
+        self._rev_chunker = None   # played audio → 10ms frames for process_reverse_stream
+        if config.aec_enabled:
+            try:
+                self.apm = rtc.AudioProcessingModule(
+                    echo_cancellation=True,
+                    noise_suppression=True,
+                    high_pass_filter=True,
+                    auto_gain_control=True,
+                )
+                self.apm.set_stream_delay_ms(config.aec_stream_delay_ms)
+                self._cap_chunker = TenMsChunker(SAMPLE_RATE, CHANNELS)
+                self._rev_chunker = TenMsChunker(SAMPLE_RATE, CHANNELS)
+                print(f"🔇 AEC enabled (stream_delay_ms={config.aec_stream_delay_ms})")
+            except Exception as e:
+                print(f"⚠️ AEC unavailable, continuing without it: {e}")
+                self.apm = None
+
         self.running = False
         
     async def connect(self):
@@ -449,16 +515,23 @@ class LiveKitClient:
             
             # Get audio data and play
             audio_data = bytes(frame.data)
-            
+
             # Check if there's actual audio (not silence)
             audio_array = np.frombuffer(audio_data, dtype=np.int16)
             rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
-            
+
             if rms > 100:  # Non-silence threshold
                 if frame_count == 0:
                     print(f"🔊 Receiving audio... (rms={rms:.0f})")
                 frame_count += 1
-            
+
+            # AEC far-end reference: tell the echo canceller what we're about to play,
+            # in exact 10ms frames, so it can subtract this from the mic. Only valid when
+            # the played stream is at our APM rate (the agent publishes at SAMPLE_RATE).
+            if self.apm is not None and frame.sample_rate == SAMPLE_RATE:
+                for ref in self._rev_chunker.push(audio_array):
+                    self.apm.process_reverse_stream(ref)
+
             self.speaker.play(audio_data)
     
     async def publish_microphone(self):
@@ -490,21 +563,24 @@ class LiveKitClient:
             try:
                 audio_bytes = self.mic.read()
                 if audio_bytes:
-                    # Create audio frame
                     audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                    frame = rtc.AudioFrame.create(
-                        SAMPLE_RATE,
-                        CHANNELS,
-                        len(audio_data),
-                    )
-                    # Copy audio data to frame
-                    np.copyto(
-                        np.frombuffer(frame.data, dtype=np.int16),
-                        audio_data
-                    )
-                    
-                    # Capture frame to source
-                    await self.audio_source.capture_frame(frame)
+                    if self.apm is not None:
+                        # AEC near-end: strip the agent's echo from the mic (in-place)
+                        # in exact 10ms frames, then publish the cleaned frames.
+                        for f in self._cap_chunker.push(audio_data):
+                            self.apm.process_stream(f)
+                            await self.audio_source.capture_frame(f)
+                    else:
+                        frame = rtc.AudioFrame.create(
+                            SAMPLE_RATE,
+                            CHANNELS,
+                            len(audio_data),
+                        )
+                        np.copyto(
+                            np.frombuffer(frame.data, dtype=np.int16),
+                            audio_data
+                        )
+                        await self.audio_source.capture_frame(frame)
                     
             except KeyboardInterrupt:
                 break
